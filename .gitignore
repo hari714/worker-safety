@@ -1,0 +1,56 @@
+# Environment
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Model weights
+*.pt
+*.pth
+*.onnx
+
+# Datasets & training artifacts
+datasets/
+runs/
+transfer_package/
+
+# Images & detection results
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.gif
+*.mp4
+*.avi
+output_results/
+detection_result.jpg
+
+# Large archives
+*.zip
+
+# Database
+*.sqlite
+*.db
+
+# Documents / review files (not source code)
+*.pdf
+*.pptx
+
+# IDE / editor
+.vscode/
+.idea/
+
+# OS files
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Logs
+logs/
+
+# Huggingface cache
+models/huggingface/.cache/
+
+# Claude config
+.claude/
