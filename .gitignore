@@ -10,6 +10,9 @@ __pycache__/
 *.pth
 *.onnx
 
+# Allow trained PPE model
+!models/ppe_detection_best.pt
+
 # Datasets & training artifacts
 datasets/
 runs/
