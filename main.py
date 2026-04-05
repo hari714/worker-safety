@@ -50,21 +50,24 @@ def main():
 
     if args.mode == 'webcam':
         logger.info(f"Camera ID: {CAMERA_ID}")
-        # Phase 5: Will import and run WorkplaceSafetyMonitor.run_from_webcam()
-        logger.info("Webcam mode will be available after Phase 5 implementation.")
+        from monitoring import WorkplaceSafetyMonitor
+        monitor = WorkplaceSafetyMonitor()
+        monitor.run_from_webcam()
 
     elif args.mode == 'video':
         if not args.video:
             logger.error("Please provide --video path for video mode")
             return
         logger.info(f"Video: {args.video}")
-        # Phase 5: Will import and run WorkplaceSafetyMonitor.run_from_video()
-        logger.info("Video mode will be available after Phase 5 implementation.")
+        from monitoring import WorkplaceSafetyMonitor
+        monitor = WorkplaceSafetyMonitor()
+        monitor.run_from_video(args.video)
 
     elif args.mode == 'api':
         logger.info(f"Starting API server at {args.host}:{args.port}")
-        # Phase 5: Will import and run Flask app
-        logger.info("API mode will be available after Phase 5 implementation.")
+        from api import create_app
+        app = create_app()
+        app.run(host=args.host, port=args.port, debug=False)
 
 
 if __name__ == '__main__':

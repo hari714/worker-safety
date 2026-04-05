@@ -18,3 +18,9 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def init_db():
+    """Create all tables if they don't exist. Safe to call multiple times."""
+    from worker_management.models import Base
+    Base.metadata.create_all(bind=engine)

@@ -13,7 +13,7 @@ from .ppe_classes import PPEDetection, CLASS_NAMES, REQUIRED_PPE, CLASS_COLORS
 class PPEDetector:
     """Real-time PPE Detection using YOLOv8."""
 
-    def __init__(self, model_path, confidence_threshold=0.5, use_tta=True):
+    def __init__(self, model_path, confidence_threshold=0.5, use_tta=False):
         """
         Initialize PPE Detector.
 
