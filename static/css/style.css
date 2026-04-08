@@ -511,6 +511,17 @@
   }
   .frame-compliant { background: var(--accent-glow); color: var(--accent); }
   .frame-violation { background: var(--danger-bg); color: var(--danger); }
+  .frame-ppe-list { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; max-width: 65%; }
+  .frame-ppe-found {
+    background: rgba(34, 197, 94, 0.15);
+    color: #22c55e;
+    border: 1px solid rgba(34, 197, 94, 0.35);
+  }
+  .frame-ppe-missing {
+    background: rgba(239, 68, 68, 0.12);
+    color: #ef4444;
+    border: 1px solid rgba(239, 68, 68, 0.30);
+  }
 
   /* ── Face List ──────────────────────────────────────── */
   .face-row {

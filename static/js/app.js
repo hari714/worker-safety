@@ -172,8 +172,21 @@
       document.getElementById('livePpeList').innerHTML = ppeHtml;
 
       const faces = s.faces || [];
-      // Don't rebuild face list while email is being sent (button would be destroyed)
-      if (window._emailSending) return;
+      const autoEmails = s.auto_emails || {};
+
+      // Surface a one-time toast whenever a new auto-email lands.
+      // We track the last seen "time" per worker to detect fresh sends.
+      if (!window._seenAutoEmails) window._seenAutoEmails = {};
+      Object.keys(autoEmails).forEach(function(wid) {
+        var rec = autoEmails[wid];
+        if (rec && rec.time && window._seenAutoEmails[wid] !== rec.time) {
+          window._seenAutoEmails[wid] = rec.time;
+          if (rec.sent) {
+            showEmailToast('Auto-email sent for worker ' + wid + ' at ' + rec.time, true);
+          }
+        }
+      });
+
       if (faces.length === 0) {
         document.getElementById('liveFaceList').innerHTML = '<p style="color:var(--text-muted);font-size:0.82rem;text-align:center;padding:12px;">No faces detected</p>';
       } else {
@@ -182,14 +195,22 @@
         const isCompliant = s.compliant;
         window._liveFaces = faces;
         window._liveMissingPpe = missingPpe;
-        faces.forEach(function(f, idx) {
+        faces.forEach(function(f) {
           fHtml += '<div class="face-row">' +
             '<div class="face-avatar">' + (f.name ? f.name[0] : '?') + '</div>' +
             '<div><div class="face-name">' + f.name + '</div>' +
             '<div class="face-conf">Confidence: ' + f.confidence + '</div></div>';
           if (f.status === 'Identified') {
             if (!isCompliant && missingPpe.length > 0) {
-              fHtml += '<button class="btn-email" onclick="sendEmailForFace(' + idx + ', this)">Send Email</button>';
+              // Auto-email is fired by the backend; show the resulting state.
+              var rec = autoEmails[f.worker_id];
+              if (rec && rec.sent) {
+                fHtml += '<span class="badge badge-found" title="Sent at ' + rec.time + '">&#10003; Email Sent</span>';
+              } else if (rec && !rec.sent) {
+                fHtml += '<span class="badge badge-missing" title="' + (rec.message || '') + '">Notified</span>';
+              } else {
+                fHtml += '<span class="badge badge-missing">Notifying...</span>';
+              }
             } else {
               fHtml += '<span class="badge badge-found">Compliant</span>';
             }
@@ -380,46 +401,13 @@
     if (tab === 'register') loadRegisteredWorkers();
   };
 
-  // Global flag to pause face list refresh while sending email
-  window._emailSending = false;
-
+  // Toast helper for auto-email notifications surfaced from /live/status.
   function showEmailToast(msg, isSuccess) {
     var el = document.getElementById('emailStatus');
     if (!el) return;
     el.className = 'email-toast show ' + (isSuccess ? 'toast-success' : 'toast-error');
     el.innerHTML = (isSuccess ? '&#10003; ' : '&#10007; ') + msg;
     setTimeout(function() { el.className = 'email-toast'; }, 6000);
-  }
-
-  function sendEmailForFace(idx, btnEl) {
-    var f = window._liveFaces[idx];
-    if (!f) return;
-    window._emailSending = true;
-    if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Sending...'; }
-
-    fetch('/send-violation-email', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        worker_id: f.worker_id || '',
-        worker_name: f.name || '',
-        worker_email: f.email || '',
-        missing_ppe: window._liveMissingPpe || []
-      })
-    })
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      window._emailSending = false;
-      if (data.status === 'ok') {
-        showEmailToast('Email sent successfully to ' + (f.email || ''), true);
-      } else {
-        showEmailToast(data.message || 'Failed to send email', false);
-      }
-    })
-    .catch(function(err) {
-      window._emailSending = false;
-      showEmailToast('Error: ' + err.message, false);
-    });
   }
 
   function deleteWorker(workerId, btnEl) {

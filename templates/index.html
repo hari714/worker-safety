@@ -362,13 +362,15 @@
               <img src="data:image/jpeg;base64,{{ frame.image_b64 }}" alt="Frame at {{ frame.time }}s">
               <div class="frame-info">
                 <span class="frame-time">{{ frame.time }}s</span>
-                <div>
-                  {% if frame.faces > 0 %}<span class="frame-badge" style="background:var(--purple-bg);color:var(--purple);margin-right:4px">{{ frame.faces }} face(s)</span>{% endif %}
-                  {% if frame.compliant %}
-                  <span class="frame-badge frame-compliant">OK</span>
-                  {% else %}
-                  <span class="frame-badge frame-violation">{{ frame.missing | join(', ') }}</span>
-                  {% endif %}
+                <div class="frame-ppe-list">
+                  {% if frame.faces > 0 %}<span class="frame-badge" style="background:var(--purple-bg);color:var(--purple)">{{ frame.faces }} face(s)</span>{% endif %}
+                  {% for ppe in ['Helmet', 'Gloves', 'Vest', 'Boots', 'Goggles'] %}
+                    {% if ppe in frame.ppe_found %}
+                    <span class="frame-badge frame-ppe-found">{{ ppe }}</span>
+                    {% else %}
+                    <span class="frame-badge frame-ppe-missing">{{ ppe }}</span>
+                    {% endif %}
+                  {% endfor %}
                 </div>
               </div>
             </div>

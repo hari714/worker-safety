@@ -53,19 +53,160 @@ live_camera = {
     'frame_count': 0,
     'face_interval': 5,
     'cached_faces': [],
+    # Auto-email tracking for live violations:
+    #   auto_email_attempts: {worker_id: datetime} — last time we *tried* to send
+    #     (cheap throttle so we don't spawn a thread every frame)
+    #   auto_email_results:  {worker_id: {sent, time, message, missing}} — UI state
+    'auto_email_attempts': {},
+    'auto_email_results': {},
+    'auto_email_lock': threading.Lock(),
     'last_status': {
         'faces': [],
         'ppe_found': [],
         'missing_ppe': [],
         'compliant': True,
-        'fps': 0.0
+        'fps': 0.0,
+        'auto_emails': {}
     }
 }
+
+# Don't re-spawn an auto-email thread for the same worker within this many seconds.
+# EmailNotificationSystem enforces a longer per-worker cooldown (15 min) — this just
+# keeps the live loop from spawning threads on every face detection cycle.
+AUTO_EMAIL_THROTTLE_SECONDS = 30
+
+
+def _send_violation_email_background(worker_id, worker_name, worker_email,
+                                      missing_ppe, frame_snapshot):
+    """Worker thread: persist a violation screenshot and email the worker.
+
+    Runs off the live capture thread so frame streaming is never blocked.
+    The 15-minute per-worker cooldown inside EmailNotificationSystem handles
+    flood protection — this function just records the outcome for the UI.
+    """
+    image_path = None
+    try:
+        os.makedirs('violations', exist_ok=True)
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        image_path = os.path.join('violations', f'{worker_id}_{ts}.jpg')
+        cv2.imwrite(image_path, frame_snapshot)
+    except Exception as e:
+        print(f"[auto-email] could not save violation image: {e}")
+        image_path = None
+
+    violation = ViolationRecord(
+        worker_id=worker_id,
+        worker_name=worker_name,
+        worker_email=worker_email,
+        timestamp=datetime.now(timezone.utc),
+        missing_ppe=set(missing_ppe),
+        violation_count=1,
+        image_path=image_path
+    )
+
+    sent = False
+    message = ''
+    try:
+        sent = email_system.send_email(violation)
+        message = 'Email sent' if sent else 'Skipped (cooldown or send failed)'
+    except Exception as e:
+        message = f'Error: {e}'
+        print(f"[auto-email] send failed for {worker_id}: {e}")
+
+    with live_camera['auto_email_lock']:
+        live_camera['auto_email_results'][worker_id] = {
+            'sent': bool(sent),
+            'time': datetime.now().strftime('%H:%M:%S'),
+            'message': message,
+            'missing': sorted(list(missing_ppe))
+        }
+
+
+def _maybe_auto_send_violation_emails(faces_info, missing_ppe, frame):
+    """Spawn background email sends for identified, non-compliant workers.
+
+    Called from the live frame generator. Throttled per worker so we don't
+    spawn a thread on every face-detection cycle.
+    """
+    if email_system is None or not email_system.sender_email:
+        return
+    if not missing_ppe or not faces_info:
+        return
+
+    now = datetime.now()
+    for f in faces_info:
+        if f.get('status') != 'Identified':
+            continue
+        worker_id = f.get('worker_id')
+        worker_email = f.get('email')
+        if not worker_id or not worker_email:
+            continue
+
+        with live_camera['auto_email_lock']:
+            last_attempt = live_camera['auto_email_attempts'].get(worker_id)
+            if last_attempt and (now - last_attempt).total_seconds() < AUTO_EMAIL_THROTTLE_SECONDS:
+                continue
+            live_camera['auto_email_attempts'][worker_id] = now
+
+        threading.Thread(
+            target=_send_violation_email_background,
+            args=(worker_id, f.get('name', ''), worker_email,
+                  list(missing_ppe), frame.copy()),
+            daemon=True
+        ).start()
 
 
 # ── Helper Functions ───────────────────────────────────────────────
 
 IMG_SIZE = 640
+
+
+# MTCNN can fire on hi-vis vests, helmets, and construction signs.
+# Stricter thresholds for displaying *unidentified* faces filter those out.
+# Identified workers are always kept (their match is the proof of validity).
+FACE_DISPLAY_CONF = 0.95
+FACE_DISPLAY_MIN_SIZE = 40
+
+
+def _filter_face_results(face_results):
+    """Drop likely false-positive face detections.
+
+    Identified workers always pass; unknowns must clear a higher confidence
+    bar and a minimum bbox size.
+    """
+    filtered = []
+    for face_det, worker in face_results:
+        if worker:
+            filtered.append((face_det, worker))
+            continue
+        x1, y1, x2, y2 = face_det.bbox
+        if (x2 - x1) < FACE_DISPLAY_MIN_SIZE or (y2 - y1) < FACE_DISPLAY_MIN_SIZE:
+            continue
+        if face_det.confidence < FACE_DISPLAY_CONF:
+            continue
+        filtered.append((face_det, worker))
+    return filtered
+
+
+def _face_results_to_dicts(face_results):
+    """Convert (FaceDetection, Worker) tuples to UI-friendly dicts."""
+    faces = []
+    for face_det, worker in face_results:
+        if worker:
+            faces.append({
+                'name': worker.worker_name,
+                'confidence': f"{worker.confidence:.2f}",
+                'status': 'Identified',
+                'worker_id': worker.worker_id
+            })
+        else:
+            faces.append({
+                'name': 'Unknown',
+                'confidence': f"{face_det.confidence:.2f}",
+                'status': 'Unknown',
+                'worker_id': None
+            })
+    return faces
 
 
 def run_face_detection(frame):
@@ -75,23 +216,8 @@ def run_face_detection(frame):
 
     try:
         face_results = face_system.identify_faces_in_frame(frame)
-        faces = []
-        for face_det, worker in face_results:
-            if worker:
-                faces.append({
-                    'name': worker.worker_name,
-                    'confidence': f"{worker.confidence:.2f}",
-                    'status': 'Identified',
-                    'worker_id': worker.worker_id
-                })
-            else:
-                faces.append({
-                    'name': 'Unknown',
-                    'confidence': f"{face_det.confidence:.2f}",
-                    'status': 'Unknown',
-                    'worker_id': None
-                })
-        return faces
+        face_results = _filter_face_results(face_results)
+        return _face_results_to_dicts(face_results)
     except Exception as e:
         print(f"Face detection error: {e}")
         return []
@@ -160,14 +286,16 @@ def detect_ppe(image_bytes):
         cv2.rectangle(frame, (x1, y1 - lh - 8), (x1 + lw + 4, y1), (255, 255, 255), -1)
         cv2.putText(frame, label, (x1 + 2, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
 
-    # Face Detection
-    faces = run_face_detection(frame)
+    # Face Detection — single pass, filter false positives, then draw + report.
+    faces = []
     if face_system:
         try:
-            face_det_results = face_system.identify_faces_in_frame(frame)
-            frame = face_system.draw_face_detections(frame, face_det_results)
-        except Exception:
-            pass
+            face_results = face_system.identify_faces_in_frame(frame)
+            face_results = _filter_face_results(face_results)
+            frame = face_system.draw_face_detections(frame, face_results)
+            faces = _face_results_to_dicts(face_results)
+        except Exception as e:
+            print(f"Face detection error: {e}")
 
     _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
     image_b64 = base64.b64encode(buffer).decode('utf-8')
@@ -225,7 +353,9 @@ def process_video(video_path):
         detections = ppe_detector.detect_ppe(frame)
         annotated = ppe_detector.draw_detections(frame.copy(), detections)
 
-        detected_names = {d.class_name for d in detections}
+        # PPEDetector returns lowercase class names ('helmet', 'gloves', ...)
+        # while REQUIRED_PPE is Title-case — normalize before comparing.
+        detected_names = {d.class_name.title() for d in detections}
         missing = list(REQUIRED_PPE - detected_names)
         is_compliant = len(missing) == 0
         if is_compliant:
@@ -372,7 +502,9 @@ def generate_live_frames():
         try:
             detections = live_ppe_detector.detect_ppe(frame)
             annotated = live_ppe_detector.draw_detections(annotated, detections)
-            detected_names = [d.class_name for d in detections]
+            # PPEDetector returns lowercase class names — normalize to Title case
+            # so they match REQUIRED_PPE.
+            detected_names = [d.class_name.title() for d in detections]
             missing = list(REQUIRED_PPE - set(detected_names))
             is_compliant = len(missing) == 0
         except Exception:
@@ -444,12 +576,22 @@ def generate_live_frames():
         cv2.putText(annotated, status_text, (10, h - 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, status_color, 2, cv2.LINE_AA)
 
+        # Auto-send violation emails for identified workers who are non-compliant.
+        # Only attempt on face-detection cycles (not every frame) — the throttle
+        # inside _maybe_auto_send_violation_emails further protects against bursts.
+        if not is_compliant and frame_count % live_camera['face_interval'] == 0:
+            _maybe_auto_send_violation_emails(faces_info, missing, frame)
+
+        with live_camera['auto_email_lock']:
+            auto_emails_snapshot = dict(live_camera['auto_email_results'])
+
         live_camera['last_status'] = {
             'faces': faces_info,
             'ppe_found': detected_names,
             'missing_ppe': missing,
             'compliant': is_compliant,
-            'fps': round(current_fps, 1)
+            'fps': round(current_fps, 1),
+            'auto_emails': auto_emails_snapshot
         }
 
         _, buffer = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
@@ -483,6 +625,11 @@ def live_start():
         live_camera['running'] = True
         live_camera['frame_count'] = 0
         live_camera['cached_faces'] = []
+
+    # Clear auto-email UI state on session start so stale "Email Sent" badges
+    # from a previous run don't show. (The 15-min SMTP cooldown still applies.)
+    with live_camera['auto_email_lock']:
+        live_camera['auto_email_results'].clear()
 
     return jsonify({'status': 'ok'})
 
